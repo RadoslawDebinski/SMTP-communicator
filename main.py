@@ -11,14 +11,25 @@ import os
 from PIL import Image
 from datetime import datetime
 
+from nltk.corpus import stopwords
+stop_words = stopwords.words('english')
+
+# words matching model import
+import spacy
+nlp = spacy.load('en_core_web_md')
+
+# file path to attachements file
 filePath = '...'
+# width od images in attachments to print
 newWidth = 64
-resMess = "Pls leave me alone. \n\n Yours sincerely \n\n labywno@wp.pl"
+# message for autoresponder
+resMess = "..."
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        # setting login data / buttons
         self.setWindowTitle("Klient poczty")
         self.setGeometry(100, 100, 800, 600)
         self.centralWidget = QWidget(self)
@@ -45,6 +56,7 @@ class MainWindow(QMainWindow):
         self.mainLayout.addWidget(self.messagesEdit)
         self.sendLayout = QHBoxLayout()
         self.mainLayout.addLayout(self.sendLayout)
+        # setting sending data / buttons
         self.toLabel = QLabel("Do:")
         self.sendLayout.addWidget(self.toLabel)
         self.toEdit = QLineEdit()
@@ -56,7 +68,7 @@ class MainWindow(QMainWindow):
         self.sendButton = QPushButton("Wyślij")
         self.sendLayout.addWidget(self.sendButton)
         self.sendButton.clicked.connect(self.send)
-
+        # setting responder data / buttons
         self.resLayout = QHBoxLayout()
         self.mainLayout.addLayout(self.resLayout)
         self.fromLabel = QLabel("Responder od:")
@@ -70,7 +82,18 @@ class MainWindow(QMainWindow):
         self.sendButton = QPushButton("Ustaw")
         self.resLayout.addWidget(self.sendButton)
         self.sendButton.clicked.connect(self.resSet)
+        # setting key word checking data / buttons
+        self.findLayout = QHBoxLayout()
+        self.mainLayout.addLayout(self.findLayout)
+        self.findLabel = QLabel("Słowo kluczowe:")
+        self.findLayout.addWidget(self.findLabel)
+        self.findEdit = QLineEdit()
+        self.findLayout.addWidget(self.findEdit)
+        self.sendButton = QPushButton("Szukaj")
+        self.findLayout.addWidget(self.sendButton)
+        self.sendButton.clicked.connect(self.findWords)
 
+    # conversion image to ASCIIart algorithm
     def convert_ACII_art(self, imagePath):
         img = Image.open(imagePath)
 
@@ -92,10 +115,61 @@ class MainWindow(QMainWindow):
         # split string of chars into multiple strings of length equal to new width and create a list
         newPixelsCount = len(newPixels)
         asciiImage = [newPixels[index:index + newWidth] for index in range(0, newPixelsCount, newWidth)]
-        # send image
+        # connect parts of image
         for i in asciiImage:
             self.messagesEdit.append(str(i))
 
+    # preprocessing data for key word checking algorithm = no spaces, split, lower cases
+    def preprocess(self, sentence):
+        return [w for w in sentence.lower().split() if w not in stop_words]
+
+    # checking similarity between key word and all words in messages algorithm
+    def checkSim(self, part, email_message):
+        sampleWord = self.findEdit.text()
+        # taking data depends on form of message = with attachment or not
+        if part is None:
+            part = email_message
+            mess = email_message.get_payload()
+        else:
+            mess = part.get_payload()
+        # preprocess message
+        messP = self.preprocess(mess)
+        simData = []
+        for i in messP:
+            tokens = nlp(f"{sampleWord} {i}")
+            token1, token2 = tokens[0], tokens[1]
+            sim = round(token1.similarity(token2) * 100)
+            # acceptable level of similarity in %
+            if sim > 60:
+                simData.append(f"{i} = {sim}%")
+        if len(simData) > 0:
+            self.messagesEdit.append("\n" + 'Od: ' + str(email_message['From']) + "\n")
+            self.messagesEdit.append('Temat: ' + str(email_message['Subject']) + "\n")
+            self.messagesEdit.append(part.get_payload())
+            self.messagesEdit.append(f"\n{simData}\n")
+
+    # connection to email to preprocess messages
+    def findWords(self):
+        self.messagesEdit.clear()
+        _, search_data = self.imap.search(None, 'ALL')
+        mail_ids = search_data[0].split()
+
+        for mail_id in mail_ids:
+            _, data = self.imap.fetch(mail_id, '(RFC822)')
+            _, b = data[0]
+            email_message = email.message_from_bytes(b)
+
+            if email_message.is_multipart():
+                for part in email_message.walk():
+                    content_type = part.get_content_type()
+                    if 'image' in content_type:
+                        pass
+                    elif 'text/plain' in content_type:
+                        self.checkSim(part, email_message)
+            else:
+                self.checkSim(None, email_message)
+
+    # setting timer for responder
     def resSet(self):
 
         timer = QTimer(self)
@@ -103,16 +177,16 @@ class MainWindow(QMainWindow):
         timer.start(10000)
 
     def responder(self):
-
+        # gathering time intervals
         today = datetime.today().strftime('%Y-%m-%d')
         resFrom = self.fromEdit.text()
         resTo = self.untilEdit.text()
-
+        # checking time intervals
         if resFrom < today < resTo:
 
             _, search_data = self.imap.search(None, 'UNSEEN')
             mail_ids = search_data[0].split()
-
+            # auto respond for all unseen messages and changing their status
             if len(mail_ids) != 0:
                 for mail_id in mail_ids:
                     _, data = self.imap.fetch(mail_id, '(RFC822)')
@@ -133,15 +207,19 @@ class MainWindow(QMainWindow):
                     self.imap.store(mail_id, '+FLAGS', '\Seen')
                     smtp.quit()
 
+    # login to email
     def login(self):
         self.messagesEdit.clear()
+        # gathering data from user
         email = self.emailEdit.text()
         password = self.passwordEdit.text()
         self.imap = imaplib.IMAP4_SSL('imap.wp.pl', 993)
         log = False
+        # checking data are acceptable
         try:
             self.imap.login(email, password)  # email, password
             log = True
+        # there should be external error of email
         except:
             self.messagesEdit.clear()
             self.messagesEdit.append('Invalid login or password')
@@ -149,6 +227,7 @@ class MainWindow(QMainWindow):
             self.imap.select('INBOX')
             self.fetch_messages()
 
+    # messages analysis and conversion of images in attachments
     def fetch_messages(self):
         _, search_data = self.imap.search(None, 'ALL')
         mail_ids = search_data[0].split()
@@ -179,6 +258,7 @@ class MainWindow(QMainWindow):
             else:
                 self.messagesEdit.append(email_message.get_payload())
 
+    # sending email by data gathered form user
     def send(self):
         smtp = smtplib.SMTP('smtp.wp.pl', 587)
         smtp.ehlo()
@@ -193,8 +273,6 @@ class MainWindow(QMainWindow):
         smtp.sendmail(emailToSend, self.toEdit.text(), msg.as_string())
         smtp.quit()
         self.messagesEdit.clear()
-        self.toEdit.clear()
-        self.subjectEdit.clear()
 
 
 if __name__ == '__main__':
